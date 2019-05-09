@@ -1,9 +1,9 @@
 # Tokenize
 # ========
 
-# A set of parser parameters.
-struct ParserParameters
-    delim::UInt8
+# A set of lexing parameters.
+struct LexerParameters
+    delim::Union{UInt8,Nothing}
     quot::UInt8
     trim::Bool
     lzstring::Bool
@@ -15,11 +15,12 @@ struct ParserParameters
     hasheader::Bool
     chunkbits::Int
 
-    function ParserParameters(delim::Char, quot::Char, trim::Bool, lzstring::Bool,
-                              skip::Integer, skipblank::Bool, comment::String,
-                              colnames::Any, normalizenames::Bool,
-                              hasheader::Bool, chunkbits::Integer)
-        if delim ∉ ALLOWED_DELIMITERS
+    function LexerParameters(
+            delim::Union{Char,Nothing}, quot::Char, trim::Bool, lzstring::Bool,
+            skip::Integer, skipblank::Bool, comment::String,
+            colnames::Any, normalizenames::Bool,
+            hasheader::Bool, chunkbits::Integer)
+        if delim ∉ ALLOWED_DELIMITERS && delim !== nothing
             throw(ArgumentError("delimiter $(repr(delim)) is not allowed"))
         elseif quot ∉ ALLOWED_QUOTECHARS
             throw(ArgumentError("quotation character $(repr(quot)) is not allowed"))
@@ -42,7 +43,7 @@ struct ParserParameters
             colnames = Symbol.(collect(colnames))
         end
         return new(
-            UInt8(delim),
+            delim isa Char ? UInt8(delim) : delim,
             UInt8(quot),
             trim,
             lzstring,
@@ -193,7 +194,7 @@ macro endheadertoken()
     end |> esc
 end
 
-function scanheader(mem::Memory, params::ParserParameters)
+function scanheader(mem::Memory, params::LexerParameters)
     # Check parameters.
     delim, quot, trim = params.delim, params.quot, params.trim
     @assert delim != quot
@@ -370,12 +371,11 @@ end
 
 macro endtoken()
     quote
-        if i > ncols
+        if i ≥ ncols
             msg = "unexpected number of columns at line $(line)"
             @goto ERROR
         end
-        @inbounds tokens[i,row] = token
-        i += 1
+        @inbounds tokens[(i+=1)+base] = token
         quoted = false
         qstring = false
     end |> esc
@@ -387,8 +387,8 @@ function scanline!(
         tokens::Matrix{Token}, row::Int,
         # input info
         mem::Memory, pos::Int, line::Int,
-        # parser parameters
-        params::ParserParameters
+        # lexer parameters
+        params::LexerParameters
     )
 
     # Check parameters.
@@ -407,7 +407,8 @@ function scanline!(
     blank = true  # blank line?
     msg = ""  # error message
     start = 0  # the starting position of a token
-    i = 1  # the column of a token
+    i = 0  # the column of a token
+    base = ncols * (row - 1)  # the base index of tokens in the current row
 
     if !isempty(params.comment)
         q = 1
@@ -496,12 +497,12 @@ function scanline!(
         elseif UInt8('!') ≤ c ≤ UInt8('~')
             @goto STRING
         elseif c == LF
-            if i == ncols
+            if i + 1 == ncols
                 @recordtoken MISSING
             end
             @goto LF
         elseif c == CR
-            if i == ncols
+            if i + 1 == ncols
                 @recordtoken MISSING
             end
             @goto CR
@@ -1063,7 +1064,7 @@ function scanline!(
     @label ERROR
     if isempty(msg)
         # default error message
-        msg = "invalid file format at line $(line), column $(i) "
+        msg = "invalid file format at line $(line), column $(i + 1) "
         if c ≤ 0x7f  # ASCII
             msg = string(msg, "(found $(repr(Char(c))))")
         else
@@ -1102,5 +1103,5 @@ function scanline!(
     end
 
     @label END
-    return pos, i - 1, params.skipblank && blank
+    return pos, i, params.skipblank && blank
 end
